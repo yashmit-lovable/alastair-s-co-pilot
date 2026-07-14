@@ -1,24 +1,54 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useCallback, useState } from "react";
+import { toast } from "sonner";
+import { TopNav } from "@/components/copilot/TopNav";
+import { StandbyState } from "@/components/copilot/StandbyState";
+import { LiveCallState } from "@/components/copilot/LiveCallState";
+import { PostCallReview } from "@/components/copilot/PostCallReview";
+import { RECENT_CALLS } from "@/lib/mock-data";
 
-// No head() here: the home route inherits title/description/og/twitter from
-// __root.tsx, and ships no og:image so serve-time hosting can inject the
-// project's social preview (explicit og:image or latest screenshot).
 export const Route = createFileRoute("/")({
+  head: () => ({
+    meta: [
+      { title: "Admissions Co-Pilot — Dashboard" },
+      { name: "description", content: "AI-assisted admissions call intelligence for institutional leaders." },
+    ],
+  }),
   component: Index,
 });
 
-// IMPORTANT: Replace this placeholder. See ./README.md for routing conventions.
+type AppState =
+  | { view: "standby" }
+  | { view: "live" }
+  | { view: "review"; callId: string };
+
 function Index() {
+  const [state, setState] = useState<AppState>({ view: "standby" });
+
+  const openReview = useCallback((id: string) => setState({ view: "review", callId: id }), []);
+  const goStandby = useCallback(() => setState({ view: "standby" }), []);
+
+  const simulateCall = useCallback(() => {
+    toast("Incoming call", { description: "+91 98214 55021 · Priya Menon" });
+    setState({ view: "live" });
+  }, []);
+
+  const endCall = useCallback(() => {
+    toast.success("Call ended", { description: "Opening post-call review…" });
+    // Open review for the most recent (first) mock call
+    setState({ view: "review", callId: RECENT_CALLS[0].id });
+  }, []);
+
+  const call = state.view === "review" ? RECENT_CALLS.find((c) => c.id === state.callId) ?? RECENT_CALLS[0] : null;
+
   return (
-    <div
-      className="flex min-h-screen items-center justify-center"
-      style={{ backgroundColor: "#fcfbf8" }}
-    >
-      <img
-        data-lovable-blank-page-placeholder="REMOVE_THIS"
-        src="https://cdn.gpteng.co/blank-app-v1.svg"
-        alt="Your app will live here!"
-      />
+    <div className="min-h-screen bg-background">
+      <TopNav />
+      <main className="animate-slide-up-fade" key={state.view}>
+        {state.view === "standby" && <StandbyState onOpenReview={openReview} onSimulateCall={simulateCall} />}
+        {state.view === "live" && <LiveCallState onEnd={endCall} />}
+        {state.view === "review" && call && <PostCallReview call={call} onBack={goStandby} />}
+      </main>
     </div>
   );
 }
