@@ -1,12 +1,19 @@
 import { useEffect, useState } from "react";
 import { Radio, Sparkles } from "lucide-react";
+import { callWs } from "@/lib/ws";
 
 export function TopNav() {
   const [now, setNow] = useState(new Date());
-  const [connected] = useState(true);
+  const [connected, setConnected] = useState(callWs.getStatus() === "connected");
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    callWs.connect();
+    const unsubscribe = callWs.onStatusChange((status) => setConnected(status === "connected"));
+    return unsubscribe;
   }, []);
 
   const dateStr = now.toLocaleDateString("en-IN", {

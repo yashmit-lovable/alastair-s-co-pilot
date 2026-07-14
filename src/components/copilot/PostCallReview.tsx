@@ -13,6 +13,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import type { Call, Outcome } from "@/lib/mock-data";
 import { OUTCOME_META, TRAINING_HISTORY, KB_ADDITIONS_SESSION, BEHAVIOR_CHIPS } from "@/lib/mock-data";
 import { formatDuration, formatINR } from "@/lib/format";
+import { updateOutcome } from "@/lib/api";
 import {
   ArrowLeft, BookPlus, Brain, CalendarDays, CheckCircle2, Clock,
   Download, FileText, Mic, Phone, Save, Sparkles, Target, Wand2,
@@ -296,6 +297,7 @@ function OutcomeTab({ call, onSave }: { call: Call; onSave: () => void }) {
   const [price, setPrice] = useState(call.priceAgreed?.toString() ?? "");
   const [followUp, setFollowUp] = useState("");
   const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -358,9 +360,22 @@ function OutcomeTab({ call, onSave }: { call: Call; onSave: () => void }) {
 
           <Button
             className="mt-2 h-11 w-full gap-2 bg-primary text-sm font-semibold shadow-lg shadow-primary/25 hover:bg-primary/90"
-            onClick={() => {
-              toast.success("Outcome logged", { description: `Marked as ${OUTCOME_META[outcome].label}` });
-              onSave();
+            disabled={saving}
+            onClick={async () => {
+              setSaving(true);
+              try {
+                await updateOutcome(call.id, {
+                  outcome,
+                  price_agreed: outcome === "converted" && price ? Number(price.replace(/,/g, "")) : undefined,
+                  alastair_notes: notes || undefined,
+                });
+                toast.success("Outcome logged", { description: `Marked as ${OUTCOME_META[outcome].label}` });
+                onSave();
+              } catch {
+                toast.error("Couldn't save outcome", { description: "Please try again." });
+              } finally {
+                setSaving(false);
+              }
             }}
           >
             <Save className="h-4 w-4" />

@@ -1,11 +1,20 @@
-import { RECENT_CALLS, OUTCOME_META } from "@/lib/mock-data";
+import { OUTCOME_META, type Call } from "@/lib/mock-data";
 import { formatDuration } from "@/lib/format";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ArrowUpRight, Phone, TrendingUp, Clock3, PhoneIncoming } from "lucide-react";
 
-export function StandbyState({ onOpenReview, onSimulateCall }: { onOpenReview: (id: string) => void; onSimulateCall: () => void }) {
+export function StandbyState({
+  calls,
+  onOpenReview,
+  onSimulateCall,
+}: {
+  calls: Call[];
+  onOpenReview: (id: string) => void;
+  onSimulateCall: () => void;
+}) {
+  const RECENT_CALLS = calls;
   const converted = RECENT_CALLS.filter((c) => c.outcome === "converted").length;
   const following = RECENT_CALLS.filter((c) => c.outcome === "following_up").length;
 

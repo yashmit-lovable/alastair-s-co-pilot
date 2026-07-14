@@ -7,9 +7,12 @@
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
 export default defineConfig({
+  // We serve this app as a plain static SPA from Express (express.static) in production —
+  // there is no Node/Workers server for it, so we disable Nitro entirely and turn on
+  // TanStack Start's SPA mode, which prerenders a single static HTML shell (client-side
+  // routing only, no per-request SSR) instead of building a deployable server bundle.
+  nitro: false,
   tanstackStart: {
-    // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
-    // nitro/vite builds from this
-    server: { entry: "server" },
+    spa: { enabled: true, prerender: { outputPath: "/index.html" } },
   },
 });

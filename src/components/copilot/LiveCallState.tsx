@@ -1,36 +1,38 @@
 import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { COURSES } from "@/lib/mock-data";
-import { formatDuration, formatINR } from "@/lib/format";
-import { ChevronDown, Headphones, Mic, PhoneOff, Sparkles, TrendingDown, UserRound } from "lucide-react";
+import { formatDuration, formatINR, formatTime } from "@/lib/format";
+import { callWs } from "@/lib/ws";
+import { sendInstruction } from "@/lib/api";
+import { ChevronDown, Headphones, Mic, PhoneOff, Send, Sparkles, TrendingDown, UserRound } from "lucide-react";
 
 type Entry =
   | { kind: "caller"; id: string; time: string; text: string }
   | { kind: "ai"; id: string; time: string; text: string }
   | { kind: "consult"; id: string; time: string; question: string; reply?: string; saved?: boolean };
 
-const SCRIPT: Entry[] = [
-  { kind: "caller", id: "1", time: "00:04", text: "Hi, I'm calling about the PG Diploma in Data Science I saw online." },
-  { kind: "ai", id: "2", time: "00:12", text: "Welcomed the caller, confirmed course availability, asked about their background." },
-  { kind: "caller", id: "3", time: "00:38", text: "I have a commerce background — is that a problem? And what's the fee?" },
-  { kind: "ai", id: "4", time: "00:52", text: "Reassured — 40% of the cohort is from non-tech backgrounds. Confirmed base fee ₹3,50,000." },
-  { kind: "caller", id: "5", time: "01:24", text: "That's honestly out of my range. Can you do anything on price?" },
-  { kind: "consult", id: "6", time: "01:31", question: "Sir, caller has commerce background, saying ₹3.5L is out of range. How low can I go?" },
-  { kind: "consult", id: "6", time: "01:48", question: "Sir, caller has commerce background, saying ₹3.5L is out of range. How low can I go?", reply: "Offer ₹3,00,000 with a 12-month EMI. Emphasize placement guarantee, don't drop below that yet.", saved: true },
-  { kind: "ai", id: "7", time: "02:01", text: "Offered ₹3,00,000 with 12-month EMI plan and highlighted 94% placement track record." },
-  { kind: "caller", id: "8", time: "02:34", text: "EMI helps. Do you also cover interview prep and resume building?" },
-  { kind: "consult", id: "9", time: "02:41", question: "Sir, caller is asking if career services include resume + interview prep. Do we?" },
-  { kind: "consult", id: "9", time: "02:58", question: "Sir, caller is asking if career services include resume + interview prep. Do we?", reply: "Yes — mock interviews, resume review, and 1:1 career coaching, all included. Mention Rohit's story from last cohort.", saved: true },
-];
-
-export function LiveCallState({ onEnd }: { onEnd: () => void }) {
+export function LiveCallState({
+  callId,
+  callerPhone,
+  onEnd,
+}: {
+  callId: string;
+  callerPhone: string;
+  onEnd: () => void;
+}) {
   const [seconds, setSeconds] = useState(0);
-  const [entries, setEntries] = useState<Entry[]>([SCRIPT[0]]);
-  const [step, setStep] = useState(1);
+  const [entries, setEntries] = useState<Entry[]>([]);
   const feedRef = useRef<HTMLDivElement>(null);
+
+  const [composerText, setComposerText] = useState("");
+  const [composerSending, setComposerSending] = useState(false);
+  const lastSentTextRef = useRef<string | null>(null);
+  const entryIdRef = useRef(0);
 
   useEffect(() => {
     const t = setInterval(() => setSeconds((s) => s + 1), 1000);
@@ -38,31 +40,59 @@ export function LiveCallState({ onEnd }: { onEnd: () => void }) {
   }, []);
 
   useEffect(() => {
-    if (step >= SCRIPT.length) return;
-    const t = setTimeout(() => {
+    // Reset feed when the active call changes.
+    setEntries([]);
+    setSeconds(0);
+    setComposerText("");
+    setComposerSending(false);
+    lastSentTextRef.current = null;
+
+    const unsubscribe = callWs.on("transcript_update", (msg) => {
+      if (msg.event !== "transcript_update" || msg.call_id !== callId) return;
+      const line = msg.latest_line;
+      entryIdRef.current += 1;
+      const id = `${entryIdRef.current}`;
+      const time = (() => {
+        const d = new Date(line.ts);
+        return isNaN(d.getTime()) ? line.ts : formatTime(d);
+      })();
+
       setEntries((prev) => {
-        const next = [...prev];
-        const incoming = SCRIPT[step];
-        // For consult with reply, replace the previous "question-only" consult
-        if (incoming.kind === "consult" && incoming.reply) {
-          const idx = next.findIndex((e) => e.kind === "consult" && e.id === incoming.id);
-          if (idx >= 0) next[idx] = incoming;
-          else next.push(incoming);
-        } else {
-          next.push(incoming);
+        if (line.role === "consultation") {
+          return [...prev, { kind: "consult", id, time, question: "", reply: line.text, saved: true }];
         }
-        return next;
+        return [...prev, { kind: line.role === "user" ? "caller" : "ai", id, time, text: line.text }];
       });
-      setStep((s) => s + 1);
-    }, 2200);
-    return () => clearTimeout(t);
-  }, [step]);
+
+      if (line.role === "consultation" && lastSentTextRef.current !== null && line.text === lastSentTextRef.current) {
+        setComposerSending(false);
+        setComposerText("");
+        lastSentTextRef.current = null;
+      }
+    });
+
+    return unsubscribe;
+  }, [callId]);
 
   useEffect(() => {
     feedRef.current?.scrollTo({ top: feedRef.current.scrollHeight, behavior: "smooth" });
-  }, [entries]);
+  }, [entries, composerSending]);
 
-  const negotiating = step > 5;
+  const handleSendInstruction = async () => {
+    const text = composerText.trim();
+    if (!text || composerSending) return;
+    setComposerSending(true);
+    lastSentTextRef.current = text;
+    try {
+      await sendInstruction(callId, text);
+    } catch {
+      toast.error("Couldn't send instruction", { description: "Please try again." });
+      setComposerSending(false);
+      lastSentTextRef.current = null;
+    }
+  };
+
+  const negotiating = entries.some((e) => e.kind === "consult" && !!e.reply);
   const course = COURSES[0];
   const callerOffer = 275000;
   const currentOffer = 300000;
@@ -84,7 +114,7 @@ export function LiveCallState({ onEnd }: { onEnd: () => void }) {
             </div>
             <span className="font-mono text-sm tabular-nums text-foreground/90">{formatDuration(seconds)}</span>
             <span className="text-border">·</span>
-            <span className="font-mono text-xs text-muted-foreground">+91 98214 55021</span>
+            <span className="font-mono text-xs text-muted-foreground">{callerPhone}</span>
           </div>
           <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
             <Headphones className="h-3.5 w-3.5" />
@@ -98,12 +128,24 @@ export function LiveCallState({ onEnd }: { onEnd: () => void }) {
 
         <div ref={feedRef} className="flex-1 space-y-3 overflow-y-auto p-6">
           {entries.map((e, i) => (
-            <div key={`${e.id}-${i}-${e.kind}${"reply" in e && e.reply ? "-r" : ""}`} className="animate-slide-up-fade">
+            <div key={`${e.id}-${i}-${e.kind}`} className="animate-slide-up-fade">
               {e.kind === "caller" && <CallerBubble time={e.time} text={e.text} />}
               {e.kind === "ai" && <AiBubble time={e.time} text={e.text} />}
               {e.kind === "consult" && <ConsultCard time={e.time} question={e.question} reply={e.reply} saved={e.saved} />}
             </div>
           ))}
+
+          <div className="animate-slide-up-fade">
+            <ConsultCard
+              time={formatTime(new Date())}
+              question=""
+              sending={composerSending}
+              value={composerText}
+              onChangeValue={setComposerText}
+              onSubmit={handleSendInstruction}
+            />
+          </div>
+
           <div className="flex items-center gap-2 pl-2 pt-1 text-xs text-muted-foreground">
             <span className="flex gap-1">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/60 [animation-delay:0ms]" />
@@ -251,7 +293,25 @@ function AiBubble({ time, text }: { time: string; text: string }) {
   );
 }
 
-function ConsultCard({ time, question, reply, saved }: { time: string; question: string; reply?: string; saved?: boolean }) {
+function ConsultCard({
+  time,
+  question,
+  reply,
+  saved,
+  sending,
+  value,
+  onChangeValue,
+  onSubmit,
+}: {
+  time: string;
+  question: string;
+  reply?: string;
+  saved?: boolean;
+  sending?: boolean;
+  value?: string;
+  onChangeValue?: (v: string) => void;
+  onSubmit?: () => void;
+}) {
   return (
     <div className="relative overflow-hidden rounded-xl border border-amber-500/30 bg-gradient-to-br from-amber-500/[0.06] to-transparent p-4 pl-5 animate-glow-amber">
       <div className="absolute inset-y-0 left-0 w-[3px] bg-gradient-to-b from-amber-400 to-amber-500/40" />
@@ -263,23 +323,53 @@ function ConsultCard({ time, question, reply, saved }: { time: string; question:
         <span className="font-mono text-[10px] tabular-nums text-muted-foreground/70">{time}</span>
       </div>
       <div className="mt-3 space-y-2">
-        <div>
-          <div className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">Asked</div>
-          <p className="mt-0.5 text-sm text-foreground/90">"{question}"</p>
-        </div>
+        {question && (
+          <div>
+            <div className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">Asked</div>
+            <p className="mt-0.5 text-sm text-foreground/90">"{question}"</p>
+          </div>
+        )}
         {reply ? (
           <div className="animate-slide-up-fade">
             <div className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">Alastair replied</div>
             <p className="mt-0.5 text-sm text-foreground/90">"{reply}"</p>
           </div>
-        ) : (
+        ) : sending ? (
           <div className="flex items-center gap-2 text-xs italic text-amber-300/70">
             <span className="flex gap-0.5">
               <span className="h-1 w-1 animate-pulse rounded-full bg-amber-400 [animation-delay:0ms]" />
               <span className="h-1 w-1 animate-pulse rounded-full bg-amber-400 [animation-delay:150ms]" />
               <span className="h-1 w-1 animate-pulse rounded-full bg-amber-400 [animation-delay:300ms]" />
             </span>
-            Awaiting your response…
+            Sent — awaiting confirmation…
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <div className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">Send an instruction</div>
+            <Textarea
+              className="min-h-[64px] resize-none border-amber-500/30 bg-background/40 text-sm placeholder:text-muted-foreground/60 focus-visible:ring-amber-500/40"
+              placeholder="Tell the AI what to do next…"
+              value={value ?? ""}
+              onChange={(e) => onChangeValue?.(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  onSubmit?.();
+                }
+              }}
+            />
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] italic text-amber-300/70">Awaiting your response…</span>
+              <Button
+                size="sm"
+                onClick={() => onSubmit?.()}
+                disabled={!value?.trim()}
+                className="h-7 gap-1.5 bg-amber-500/90 text-[11px] text-background hover:bg-amber-500"
+              >
+                <Send className="h-3 w-3" />
+                Send
+              </Button>
+            </div>
           </div>
         )}
         {saved && (
